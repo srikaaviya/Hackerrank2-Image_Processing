@@ -2,7 +2,6 @@
 
 import os
 import json
-import re
 from pathlib import Path
 
 
@@ -88,35 +87,54 @@ User history: {user_history_summary}
 {quality_note}{blip_section}
 
 Allowed object_part values for {claim_object}: {', '.join(part_list)}
-
-Analyze the images and return ONLY this JSON (no markdown, no explanation):
-{{
-  "evidence_standard_met": true or false,
-  "evidence_standard_met_reason": "one sentence",
-  "risk_flags": ["flag1"] or ["none"],
-  "issue_type": "one of: {', '.join(ALLOWED_ISSUE_TYPES)}",
-  "object_part": "must be one of the allowed values above",
-  "claim_status": "one of: {', '.join(ALLOWED_STATUSES)}",
-  "claim_status_justification": "explanation grounded in specific image IDs",
-  "supporting_image_ids": ["img_1"] or ["none"],
-  "valid_image": true or false,
-  "severity": "one of: {', '.join(ALLOWED_SEVERITIES)}"
-}}
-
 Allowed risk_flags: {', '.join(ALLOWED_FLAGS)}
-Use image filenames without extension for supporting_image_ids (img_1, img_2, etc.)"""
+Use image filenames without extension for supporting_image_ids (img_1, img_2, etc.)
 
+First fill in reasons_to_support_claim and reasons_to_contradict_claim by examining the images carefully. Then use that reasoning to determine the remaining fields."""
+
+
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        # Reasoning fields come FIRST — Gemini fills these before deciding verdict
+        "reasons_to_support_claim": {
+            "type": "array", "items": {"type": "string"},
+            "description": "List reasons the claim could be supported based on image evidence"
+        },
+        "reasons_to_contradict_claim": {
+            "type": "array", "items": {"type": "string"},
+            "description": "List reasons the claim could be contradicted based on image evidence"
+        },
+        # Verdict fields
+        "evidence_standard_met":        {"type": "boolean"},
+        "evidence_standard_met_reason": {"type": "string"},
+        "risk_flags":                   {"type": "array", "items": {"type": "string"}},
+        "issue_type":                   {"type": "string", "enum": ALLOWED_ISSUE_TYPES},
+        "object_part":                  {"type": "string"},
+        "claim_status":                 {"type": "string", "enum": ALLOWED_STATUSES},
+        "claim_status_justification":   {"type": "string"},
+        "supporting_image_ids":         {"type": "array", "items": {"type": "string"}},
+        "valid_image":                  {"type": "boolean"},
+        "severity":                     {"type": "string", "enum": ALLOWED_SEVERITIES},
+    },
+    "required": [
+        "reasons_to_support_claim", "reasons_to_contradict_claim",
+        "evidence_standard_met", "evidence_standard_met_reason",
+        "risk_flags", "issue_type", "object_part",
+        "claim_status", "claim_status_justification",
+        "supporting_image_ids", "valid_image", "severity",
+    ],
+}
 
 RATE_LIMIT_DELAY = 4  # seconds between calls (free tier: 15 RPM = 1 per 4s)
 _last_call_time = 0.0
 
 
-def _call_with_retry(client, parts, max_retries: int = 3) -> str:
+def _call_with_retry(client, parts, max_retries: int = 3) -> dict:
     import time
     global _last_call_time
     from google.genai import types
 
-    # Rate limit: ensure minimum gap between calls
     elapsed = time.time() - _last_call_time
     if elapsed < RATE_LIMIT_DELAY:
         time.sleep(RATE_LIMIT_DELAY - elapsed)
@@ -130,9 +148,11 @@ def _call_with_retry(client, parts, max_retries: int = 3) -> str:
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    response_schema=RESPONSE_SCHEMA,
+                    response_mime_type="application/json",
                 ),
             )
-            return response.text.strip()
+            return json.loads(response.text)
         except Exception as e:
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
@@ -197,11 +217,7 @@ def run_gemini_verdict(
         for pil_img in cropped_images:
             parts.append(types.Part.from_bytes(data=_pil_to_bytes(pil_img), mime_type="image/jpeg"))
 
-    raw = _call_with_retry(client, parts)
-    raw = re.sub(r"^```json\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-
-    result = json.loads(raw)
+    result = _call_with_retry(client, parts)
 
     result["evidence_standard_met"] = str(result.get("evidence_standard_met", False)).lower()
     result["valid_image"] = str(result.get("valid_image", True)).lower()
@@ -213,5 +229,15 @@ def run_gemini_verdict(
     ids = result.get("supporting_image_ids", ["none"])
     if isinstance(ids, list):
         result["supporting_image_ids"] = ";".join(ids) if ids and ids != ["none"] else "none"
+
+    # Targeted severity clamp — only override impossible combinations.
+    # Gemini consistently over-estimates these issue types to "high".
+    # These damage types cannot be catastrophic by definition — cap at medium.
+    # We do NOT clamp broken_part, crack, glass_shatter — those can legitimately be high.
+    issue_type = result.get("issue_type", "unknown")
+    severity = result.get("severity", "unknown")
+    NEVER_HIGH = {"scratch", "dent", "stain", "water_damage", "torn_packaging", "crushed_packaging", "missing_part"}
+    if issue_type in NEVER_HIGH and severity == "high":
+        result["severity"] = "medium"
 
     return result
