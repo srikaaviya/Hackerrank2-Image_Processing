@@ -33,7 +33,7 @@ from pipeline.image_quality import check_all_images
 # CLIP is retained in Strategy A (ClipRules) for comparison. See evaluation_report.md.
 from pipeline.claim_extractor import extract_claim
 from pipeline.damage_detector import detect_damage
-from pipeline.rules import load_user_history, get_user_risk_flags, check_evidence_standard
+from pipeline.rules import load_user_history, load_evidence_requirements, get_user_risk_flags, check_evidence_standard
 from pipeline.verdict import build_verdict
 
 OUTPUT_COLUMNS = [
@@ -47,6 +47,18 @@ OUTPUT_COLUMNS = [
 
 def resolve_image_paths(image_paths_str: str) -> list[str]:
     return [str(DATASET / p.strip()) for p in image_paths_str.split(";") if p.strip()]
+
+
+def _get_evidence_requirements(claim_object: str, evidence_reqs: pd.DataFrame) -> str:
+    relevant = evidence_reqs[
+        (evidence_reqs["claim_object"] == claim_object) | (evidence_reqs["claim_object"] == "all")
+    ]
+    if relevant.empty:
+        return ""
+    lines = []
+    for _, row in relevant.iterrows():
+        lines.append(f"- [{row['requirement_id']}] {row['applies_to']}: {row['minimum_image_evidence']}")
+    return "\n".join(lines)
 
 
 def _get_user_history_summary(user_id: str, user_history: dict) -> str:
@@ -76,7 +88,7 @@ def process_claim_strategy_a(row: dict, user_history: dict) -> dict:
     return {"user_id": user_id, "image_paths": row["image_paths"], "user_claim": conversation, "claim_object": claim_object, **result}
 
 
-def process_claim_strategy_b(row: dict, user_history: dict) -> dict:
+def process_claim_strategy_b(row: dict, user_history: dict, evidence_reqs: pd.DataFrame = None) -> dict:
     """Strategy B: OpenCV quality check, then Gemini Flash for full verdict.
     CLIP removed — see comment near imports for rationale.
     """
@@ -92,18 +104,16 @@ def process_claim_strategy_b(row: dict, user_history: dict) -> dict:
     user_flags = get_user_risk_flags(user_id, user_history)
     history_summary = _get_user_history_summary(user_id, user_history)
     pre_flags = quality.get("aggregate_flags", [])
+    evidence_req_text = _get_evidence_requirements(claim_object, evidence_reqs) if evidence_reqs is not None else ""
 
-    # NOTE: BLIP image captioning was tried here but REMOVED — it hurt accuracy (80%→75%).
-    # Root cause: generic captions like "car with damage" bias Gemini toward supported
-    # without specifying part location. See blip_descriptor.py and evaluation_report.md.
-
-    # Gemini Flash: verdict with few-shot examples
+    # Gemini Flash: verdict with structured reasoning
     result = run_gemini_verdict(
         conversation=conversation,
         claim_object=claim_object,
         image_paths=image_paths,
         user_history_summary=history_summary,
         image_quality_flags=pre_flags,
+        evidence_requirements=evidence_req_text,
     )
 
     # Merge user history flags into risk_flags
@@ -118,9 +128,9 @@ def process_claim_strategy_b(row: dict, user_history: dict) -> dict:
     return {"user_id": user_id, "image_paths": row["image_paths"], "user_claim": conversation, "claim_object": claim_object, **result}
 
 
-def process_claim(row: dict, user_history: dict, strategy: str) -> dict:
+def process_claim(row: dict, user_history: dict, strategy: str, evidence_reqs: pd.DataFrame = None) -> dict:
     if strategy == "B":
-        return process_claim_strategy_b(row, user_history)
+        return process_claim_strategy_b(row, user_history, evidence_reqs)
     return process_claim_strategy_a(row, user_history)
 
 
@@ -169,6 +179,7 @@ def main(claims_csv: str = None, output_csv: str = None, strategy: str = None):
     print(f"Strategy: {strategy} | Input: {claims_path}")
     claims_df = pd.read_csv(claims_path)
     user_history = load_user_history(str(DATASET / "user_history.csv"))
+    evidence_reqs = load_evidence_requirements(str(DATASET / "evidence_requirements.csv"))
 
     rows_input = [(i, row.to_dict()) for i, (_, row) in enumerate(claims_df.iterrows())]
     total = len(rows_input)
@@ -177,7 +188,7 @@ def main(claims_csv: str = None, output_csv: str = None, strategy: str = None):
     for i, row in rows_input:
         t0 = time.time()
         try:
-            result = process_claim(row, user_history, strategy)
+            result = process_claim(row, user_history, strategy, evidence_reqs)
         except Exception as e:
             print(f"  [{i+1}/{total}] ERROR: {e}")
             result = _error_row(row, e)

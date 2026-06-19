@@ -62,7 +62,7 @@ CAR_PARTS    = ["front_bumper","rear_bumper","door","windshield","hood","headlig
 LAPTOP_PARTS = ["screen","keyboard","hinge","trackpad","body","corner","lid","base","port"]
 PACKAGE_PARTS= ["package_corner","seal","package_side","contents","label","flap"]
 
-def _build_prompt(conversation: str, claim_object: str, image_ids: list, user_history_summary: str, image_quality_flags: list, image_descriptions: dict = None) -> str:
+def _build_prompt(conversation: str, claim_object: str, image_ids: list, user_history_summary: str, image_quality_flags: list, image_descriptions: dict = None, evidence_requirements: str = "") -> str:
     quality_note = f"Pre-check flags: {', '.join(image_quality_flags)}" if image_quality_flags else "Pre-check: images passed basic quality check."
     part_list = {"car": CAR_PARTS, "laptop": LAPTOP_PARTS, "package": PACKAGE_PARTS}.get(claim_object, [])
 
@@ -89,6 +89,10 @@ User history: {user_history_summary}
 Allowed object_part values for {claim_object}: {', '.join(part_list)}
 Allowed risk_flags: {', '.join(ALLOWED_FLAGS)}
 Use image filenames without extension for supporting_image_ids (img_1, img_2, etc.)
+
+Minimum image evidence requirements for this claim type:
+{evidence_requirements if evidence_requirements else "No specific requirements available."}
+Use these requirements to evaluate evidence_standard_met — check if the images meet the minimum standard described above.
 
 First fill in reasons_to_support_claim and reasons_to_contradict_claim by examining the images carefully. Then use that reasoning to determine the remaining fields."""
 
@@ -163,6 +167,10 @@ def _call_with_retry(client, parts, max_retries: int = 3) -> dict:
                 wait = 5 * (attempt + 1)
                 print(f"  [gemini] Service unavailable, waiting {wait}s (attempt {attempt+1}/{max_retries})")
                 time.sleep(wait)
+            elif "timed out" in err.lower() or "timeout" in err.lower() or isinstance(e, (TimeoutError, OSError)):
+                wait = 10 * (attempt + 1)
+                print(f"  [gemini] Timeout, retrying in {wait}s (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
             else:
                 raise
     raise RuntimeError(f"Gemini failed after {max_retries} retries")
@@ -182,8 +190,9 @@ def run_gemini_verdict(
     user_history_summary: str,
     image_quality_flags: list,
     image_descriptions: dict = None,
-    cropped_images: list = None,  # PIL images from DINO; falls back to raw paths
+    cropped_images: list = None,
     dino_found: bool = False,
+    evidence_requirements: str = "",
 ) -> dict:
     from google import genai
     from google.genai import types
@@ -200,7 +209,7 @@ def run_gemini_verdict(
     if dino_found:
         quality_flags.append("images_cropped_to_claimed_part")
 
-    prompt_text = _build_prompt(conversation, claim_object, image_ids, user_history_summary, quality_flags, image_descriptions)
+    prompt_text = _build_prompt(conversation, claim_object, image_ids, user_history_summary, quality_flags, image_descriptions, evidence_requirements)
 
     parts = [types.Part.from_text(text=prompt_text)]
 
