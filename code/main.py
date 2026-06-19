@@ -116,7 +116,42 @@ def process_claim(row: dict, user_history: dict, strategy: str) -> dict:
     return process_claim_strategy_a(row, user_history)
 
 
+def _error_row(row: dict, e: Exception) -> dict:
+    return {
+        "user_id": row["user_id"], "image_paths": row["image_paths"],
+        "user_claim": row["user_claim"], "claim_object": row["claim_object"],
+        "evidence_standard_met": "false", "evidence_standard_met_reason": f"Error: {e}",
+        "risk_flags": "none", "issue_type": "unknown", "object_part": "unknown",
+        "claim_status": "not_enough_information",
+        "claim_status_justification": "Processing error.",
+        "supporting_image_ids": "none", "valid_image": "false", "severity": "unknown",
+    }
+
+
+async def _process_async(rows_with_index, user_history, strategy, total, semaphore):
+    import asyncio
+    results = [None] * total
+
+    async def handle(i, row):
+        async with semaphore:
+            t0 = time.time()
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, process_claim, row, user_history, strategy
+                )
+            except Exception as e:
+                print(f"  [{i+1}/{total}] ERROR: {e}")
+                result = _error_row(row, e)
+            results[i] = result
+            print(f"  [{i+1}/{total}] {row['user_id']} → {result['claim_status']} | {result['issue_type']} ({time.time()-t0:.1f}s)")
+
+    await asyncio.gather(*[handle(i, row) for i, row in rows_with_index])
+    return results
+
+
 def main(claims_csv: str = None, output_csv: str = None, strategy: str = None):
+    import asyncio
+
     if strategy is None:
         strategy = "B" if os.environ.get("GOOGLE_API_KEY") else "A"
 
@@ -127,28 +162,21 @@ def main(claims_csv: str = None, output_csv: str = None, strategy: str = None):
     claims_df = pd.read_csv(claims_path)
     user_history = load_user_history(str(DATASET / "user_history.csv"))
 
-    rows = []
-    total = len(claims_df)
-    for i, (_, row) in enumerate(claims_df.iterrows()):
-        print(f"[{i+1}/{total}] {row['user_id']} | {Path(row['image_paths'].split(';')[0]).parent.name}")
+    rows_input = [(i, row.to_dict()) for i, (_, row) in enumerate(claims_df.iterrows())]
+    total = len(rows_input)
+
+    results = []
+    for i, row in rows_input:
         t0 = time.time()
         try:
-            result = process_claim(row.to_dict(), user_history, strategy)
+            result = process_claim(row, user_history, strategy)
         except Exception as e:
-            print(f"  ERROR: {e}")
-            result = {
-                "user_id": row["user_id"], "image_paths": row["image_paths"],
-                "user_claim": row["user_claim"], "claim_object": row["claim_object"],
-                "evidence_standard_met": "false", "evidence_standard_met_reason": f"Error: {e}",
-                "risk_flags": "none", "issue_type": "unknown", "object_part": "unknown",
-                "claim_status": "not_enough_information",
-                "claim_status_justification": "Processing error.",
-                "supporting_image_ids": "none", "valid_image": "false", "severity": "unknown",
-            }
-        rows.append(result)
-        print(f"  → {result['claim_status']} | {result['issue_type']} | {result['object_part']} ({time.time()-t0:.1f}s)")
+            print(f"  [{i+1}/{total}] ERROR: {e}")
+            result = _error_row(row, e)
+        results.append(result)
+        print(f"  [{i+1}/{total}] {row['user_id']} → {result['claim_status']} | {result['issue_type']} | {result['object_part']} ({time.time()-t0:.1f}s)")
 
-    out_df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+    out_df = pd.DataFrame(results, columns=OUTPUT_COLUMNS)
     out_df.to_csv(out_path, index=False)
     print(f"\nDone. Written to {out_path}")
 
