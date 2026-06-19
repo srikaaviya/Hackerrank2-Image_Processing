@@ -51,16 +51,24 @@ CAR_PARTS    = ["front_bumper","rear_bumper","door","windshield","hood","headlig
 LAPTOP_PARTS = ["screen","keyboard","hinge","trackpad","body","corner","lid","base","port"]
 PACKAGE_PARTS= ["package_corner","seal","package_side","contents","label","flap"]
 
-def _build_prompt(conversation: str, claim_object: str, image_ids: list, user_history_summary: str, image_quality_flags: list) -> str:
+def _build_prompt(conversation: str, claim_object: str, image_ids: list, user_history_summary: str, image_quality_flags: list, image_descriptions: dict = None) -> str:
     quality_note = f"Pre-check flags: {', '.join(image_quality_flags)}" if image_quality_flags else "Pre-check: images passed basic quality check."
     part_list = {"car": CAR_PARTS, "laptop": LAPTOP_PARTS, "package": PACKAGE_PARTS}.get(claim_object, [])
+
+    blip_section = ""
+    if image_descriptions:
+        lines = ["Secondary model image descriptions (use as supporting context):"]
+        for img_id, caption in image_descriptions.items():
+            lines.append(f"  {img_id}: {caption}")
+        blip_section = "\n" + "\n".join(lines)
+
     return f"""Claim conversation:
 {conversation}
 
 Claimed object type: {claim_object}
 Submitted images: {', '.join(image_ids)}
 User history: {user_history_summary}
-{quality_note}
+{quality_note}{blip_section}
 
 Allowed object_part values for {claim_object}: {', '.join(part_list)}
 
@@ -129,6 +137,7 @@ def run_gemini_verdict(
     image_paths: list,
     user_history_summary: str,
     image_quality_flags: list,
+    image_descriptions: dict = None,
 ) -> dict:
     from google import genai
     from google.genai import types
@@ -139,7 +148,7 @@ def run_gemini_verdict(
 
     client = genai.Client(api_key=api_key)
     image_ids = [Path(p).stem for p in image_paths]
-    prompt_text = _build_prompt(conversation, claim_object, image_ids, user_history_summary, image_quality_flags)
+    prompt_text = _build_prompt(conversation, claim_object, image_ids, user_history_summary, image_quality_flags, image_descriptions)
 
     parts = [types.Part.from_text(text=prompt_text)]
     for p in image_paths:
