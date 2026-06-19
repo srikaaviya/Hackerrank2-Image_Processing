@@ -39,8 +39,8 @@ SYSTEM_INSTRUCTION_CAR = """You are a damage claim verification analyst reviewin
 """ + _SHARED_RULES + """
 
 CAR ISSUE TYPE DEFINITIONS:
-- dent: surface depression or deformation on a panel/bumper — metal/plastic pushed inward, still attached. A dented bumper = dent, NOT broken_part.
-- scratch: surface scuff or paint mark without structural deformation. A scratched door = scratch, NOT dent.
+- dent: surface depression on a panel/bumper — metal/plastic pushed INWARD. To confirm a dent you MUST observe a shadow gradient or a warp in the paint reflection proving the surface is 3D-deformed inward. If there is no shadow showing depth, it is NOT a dent.
+- scratch: a 2D surface mark where paint is removed or scuffed — NO shadow indicating depth or inward push. If no shadow of depth is visible, classify as scratch not dent.
 - crack: a fracture line on glass, plastic, or body — part is STILL IN ONE PIECE even with spider-web pattern. Windshield with crack lines = crack. When in doubt between crack and glass_shatter, always choose crack.
 - glass_shatter: glass physically broken INTO SEPARATE LOOSE PIECES — falling out, hanging loosely, fallen out of frame, hole in glass, pieces missing. If glass is intact as one piece (even badly cracked) → crack, not glass_shatter.
 - broken_part: a component physically snapped off or detached from its mount (e.g. mirror housing hanging loose). A dented bumper still attached = dent NOT broken_part. Only use if physically separated.
@@ -75,8 +75,8 @@ SYSTEM_INSTRUCTION_PACKAGE = """You are a damage claim verification analyst revi
 PACKAGE ISSUE TYPE DEFINITIONS:
 - torn_packaging: packaging surface, seal, flap, or tape torn open — paper or cardboard ripped, shows signs of forced or rough handling. A clean cut = torn. A flap peeled open = torn.
 - crushed_packaging: box compressed, dented, or deformed under pressure — shape is visibly distorted, corners collapsed, sides pushed in. Note: packages do NOT get dents like cars — use crushed_packaging for any deformation on a box.
-- water_damage: visible wet stains, watermarks, moisture rings, or soggy/warped cardboard from liquid exposure.
-- stain: visible discoloration, oil mark, or non-water liquid mark on the package surface.
+- water_damage: faint chalky/white rings, warped or bubbled cardboard, soggy or soft box walls from moisture. Water dries leaving a faint ring and causes cardboard to warp. If the cardboard is warped or bubbled → water_damage.
+- stain: a distinct dark discoloration from oil, ink, coffee, or other non-water liquids — no warping or structural change to the cardboard.
 - missing_part: expected contents or components are absent — item missing from inside the package.
 - none: package exterior is visible and in perfect condition — no damage of any kind.
 - unknown: cannot determine damage type from images."""
