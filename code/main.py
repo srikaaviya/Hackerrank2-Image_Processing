@@ -25,7 +25,12 @@ DATASET = ROOT / "dataset"
 sys.path.insert(0, str(ROOT / "code"))
 
 from pipeline.image_quality import check_all_images
-from pipeline.object_verifier import verify_all_images
+# NOTE: CLIP object_verifier was removed from Strategy B.
+# CLIP (~91% accuracy) produced false positives on close-up/unusual-angle laptop images,
+# incorrectly flagging real laptops as wrong_object. Since Gemini independently views
+# the raw images and does its own object detection more accurately, CLIP's output was
+# just a text hint Gemini could override anyway — making it redundant and misleading.
+# CLIP is retained in Strategy A (ClipRules) for comparison. See evaluation_report.md.
 from pipeline.claim_extractor import extract_claim
 from pipeline.damage_detector import detect_damage
 from pipeline.rules import load_user_history, get_user_risk_flags, check_evidence_standard
@@ -72,7 +77,9 @@ def process_claim_strategy_a(row: dict, user_history: dict) -> dict:
 
 
 def process_claim_strategy_b(row: dict, user_history: dict) -> dict:
-    """Strategy B: OpenCV + CLIP pre-filter, then Gemini Flash for verdict."""
+    """Strategy B: OpenCV quality check, then Gemini Flash for full verdict.
+    CLIP removed — see comment near imports for rationale.
+    """
     from pipeline.gemini_verdict import run_gemini_verdict
 
     user_id = row["user_id"]
@@ -80,14 +87,13 @@ def process_claim_strategy_b(row: dict, user_history: dict) -> dict:
     conversation = row["user_claim"]
     image_paths = resolve_image_paths(row["image_paths"])
 
-    # Pre-filters (free)
+    # Image quality pre-check (blur, brightness, screenshot detection)
     quality = check_all_images(image_paths)
-    obj_verify = verify_all_images(image_paths, claim_object)
     user_flags = get_user_risk_flags(user_id, user_history)
     history_summary = _get_user_history_summary(user_id, user_history)
 
-    # Combine pre-filter flags as context for Gemini
-    pre_flags = quality.get("aggregate_flags", []) + obj_verify.get("flags", [])
+    # Only OpenCV flags passed as context — CLIP removed
+    pre_flags = quality.get("aggregate_flags", [])
 
     # Gemini Flash handles claim extraction + image analysis + verdict
     result = run_gemini_verdict(
