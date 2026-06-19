@@ -7,6 +7,9 @@ from pathlib import Path
 
 
 SYSTEM_INSTRUCTION = """You are a damage claim verification analyst. Your job is to review submitted images alongside a customer support conversation and decide whether visual evidence supports, contradicts, or is insufficient to verify the claimed damage.
+# NOTE: Few-shot examples were tried here (5 labeled examples) but removed.
+# They caused over-application of the not_enough_information pattern (65% accuracy vs 80% baseline).
+# Too many tokens also slowed responses to 40s per call. Clean prompt outperforms few-shot here.
 
 DECISION RULES:
 1. Visual evidence is the primary authority. User history only adds risk flags — it never changes the verdict.
@@ -25,12 +28,21 @@ DECISION RULES:
 9. Be skeptical — do not confirm damage unless it is clearly visible. Absence of visible damage = contradicted, not supported.
 10. Use ONLY the exact object_part values from the allowed list.
 
+SEVERITY — think like a regular person with common sense, NOT like a damage engineer:
+The severity ratings in this system are based on how a normal person would describe the damage in everyday language — not a technical inspection.
+- "none": I see no damage at all.
+- "low": I notice something small — a minor scratch or scuff. The item still works fine. Most people would not immediately notice.
+- "medium": Clearly visible damage. The item may still work but looks damaged. A normal person would say "yeah that's damaged."
+- "high": ONLY use this if the item is completely unusable, a major component is totally broken off or missing, glass is fully shattered into pieces, a package is heavily crushed flat, or something is so severely torn it cannot hold contents.
+- "unknown": Cannot determine severity from the image.
+STRICT RULE: When uncertain between two severity levels, ALWAYS choose the lower one. Do not over-engineer the severity. A dent is usually medium, not high. A scratch is usually low, not medium. A crack line is medium, not high. Glass_shatter is high. Completely broken-off parts are high. Everything else is medium or lower.
+
 ISSUE TYPE DEFINITIONS (use these to pick the exact correct type):
 - dent: surface depression or deformation on metal/plastic body — object still intact
 - scratch: surface mark or scuff without structural deformation
-- crack: a single fracture line on glass, screen, plastic, or body — object still in one piece
-- glass_shatter: glass broken into multiple pieces or fragments — structural integrity lost (e.g. smashed windshield, shattered screen with spider-web pattern)
-- broken_part: a component snapped off, detached, missing, or mechanically non-functional (e.g. broken mirror housing, snapped hinge)
+- crack: a fracture line on glass, screen, plastic, or body — glass/screen is STILL IN ONE PIECE even if there are multiple lines or a spider-web pattern. If you can still see the original shape of the glass/screen → crack, not glass_shatter. Spider-web crack patterns on windshields = crack. Hairline cracks = crack. "When in doubt between crack and glass_shatter, always choose crack."
+- glass_shatter: glass or screen physically broken INTO SEPARATE LOOSE PIECES — pieces are detached, falling out, hanging loosely, fallen out of the frame, no longer attached to their original position, or a section is completely missing/absent. Safety glass crumbled into fragments. A hole punched through the glass. Glass hanging from the frame. If the glass is still intact as one continuous piece (even badly cracked with spider-web pattern) → it is NOT glass_shatter, it is crack.
+- broken_part: a component physically snapped off, detached from its mount, or completely non-functional due to structural failure (e.g. mirror housing hanging loose, hinge snapped). A dented bumper that is still attached = dent, NOT broken_part. A scratched door panel = scratch, NOT broken_part. Only use broken_part if the component is physically separated or no longer attached.
 - missing_part: a part that should be there is completely absent (e.g. missing keycap, missing bumper cover)
 - torn_packaging: packaging seal, flap, or surface torn open — shows signs of forced opening
 - crushed_packaging: box compressed, dented, or deformed under pressure — shape is visibly distorted
@@ -57,9 +69,14 @@ def _build_prompt(conversation: str, claim_object: str, image_ids: list, user_hi
 
     blip_section = ""
     if image_descriptions:
-        lines = ["Secondary model image descriptions (use as supporting context):"]
-        for img_id, caption in image_descriptions.items():
-            lines.append(f"  {img_id}: {caption}")
+        lines = ["Part localization from DINO object detector:"]
+        for key, val in image_descriptions.items():
+            lines.append(f"  {key}: {val}")
+        lines.append(
+            "  IMPORTANT: Use the coordinates above to guide your visual analysis.\n"
+            "  Look specifically at the indicated region for damage evidence.\n"
+            "  If DINO could not locate the part, the claimed part may not be visible — consider 'not_enough_information'."
+        )
         blip_section = "\n" + "\n".join(lines)
 
     return f"""Claim conversation:
@@ -131,6 +148,13 @@ def _call_with_retry(client, parts, max_retries: int = 3) -> str:
     raise RuntimeError(f"Gemini failed after {max_retries} retries")
 
 
+def _pil_to_bytes(pil_image) -> bytes:
+    import io
+    buf = io.BytesIO()
+    pil_image.save(buf, format="JPEG")
+    return buf.getvalue()
+
+
 def run_gemini_verdict(
     conversation: str,
     claim_object: str,
@@ -138,6 +162,8 @@ def run_gemini_verdict(
     user_history_summary: str,
     image_quality_flags: list,
     image_descriptions: dict = None,
+    cropped_images: list = None,  # PIL images from DINO; falls back to raw paths
+    dino_found: bool = False,
 ) -> dict:
     from google import genai
     from google.genai import types
@@ -148,14 +174,28 @@ def run_gemini_verdict(
 
     client = genai.Client(api_key=api_key)
     image_ids = [Path(p).stem for p in image_paths]
-    prompt_text = _build_prompt(conversation, claim_object, image_ids, user_history_summary, image_quality_flags, image_descriptions)
+
+    # Tell Gemini whether it's looking at cropped regions or full images
+    quality_flags = list(image_quality_flags)
+    if dino_found:
+        quality_flags.append("images_cropped_to_claimed_part")
+
+    prompt_text = _build_prompt(conversation, claim_object, image_ids, user_history_summary, quality_flags, image_descriptions)
 
     parts = [types.Part.from_text(text=prompt_text)]
+
+    # Always send full images first (for damage type classification + context)
     for p in image_paths:
         if Path(p).exists():
             with open(p, "rb") as f:
                 image_bytes = f.read()
             parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+
+    # If DINO found the part, also send crops as focused verification images
+    if cropped_images and dino_found:
+        parts.append(types.Part.from_text(text="Cropped close-up of the claimed part (use to verify damage presence):"))
+        for pil_img in cropped_images:
+            parts.append(types.Part.from_bytes(data=_pil_to_bytes(pil_img), mime_type="image/jpeg"))
 
     raw = _call_with_retry(client, parts)
     raw = re.sub(r"^```json\s*", "", raw)

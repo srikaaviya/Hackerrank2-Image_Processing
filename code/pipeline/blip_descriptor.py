@@ -34,6 +34,18 @@ def _load_blip():
         print("[blip] Model loaded.")
 
 
+def caption_pil(pil_image, claim_object: str = "") -> str:
+    """Caption a PIL image directly (e.g. from a DINO crop)."""
+    import torch
+    _load_blip()
+    image = pil_image.convert("RGB")
+    prompt = f"a photo of a {claim_object}" if claim_object else None
+    inputs = _processor(image, text=prompt, return_tensors="pt") if prompt else _processor(image, return_tensors="pt")
+    with torch.no_grad():
+        out = _model.generate(**inputs, max_new_tokens=50)
+    return _processor.decode(out[0], skip_special_tokens=True).strip()
+
+
 def caption_image(image_path: str, claim_object: str = "") -> str:
     """
     Generate a descriptive caption for an image.

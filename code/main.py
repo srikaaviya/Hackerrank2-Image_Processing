@@ -94,13 +94,10 @@ def process_claim_strategy_b(row: dict, user_history: dict) -> dict:
     pre_flags = quality.get("aggregate_flags", [])
 
     # NOTE: BLIP image captioning was tried here but REMOVED — it hurt accuracy (80%→75%).
-    # Root cause: BLIP generates generic captions like "car with damage" without specifying
-    # which part is damaged. This biases Gemini toward "supported" even in contradicted cases
-    # (e.g. user claims rear bumper but image shows front bumper — BLIP says "car with damage"
-    # and Gemini reads "damage exists → supported"). BLIP needs part-specific VQA to be useful.
-    # See evaluation_report.md for full comparison. blip_descriptor.py retained for reference.
+    # Root cause: generic captions like "car with damage" bias Gemini toward supported
+    # without specifying part location. See blip_descriptor.py and evaluation_report.md.
 
-    # Gemini Flash: full verdict (raw images + OpenCV flags)
+    # Gemini Flash: verdict with few-shot examples
     result = run_gemini_verdict(
         conversation=conversation,
         claim_object=claim_object,
