@@ -24,13 +24,13 @@ DECISION RULES:
 9. Be skeptical — do not confirm damage unless it is clearly visible. Absence of visible damage = contradicted, not supported.
 10. Use ONLY the exact object_part values from the allowed list.
 
-SEVERITY FRAMEWORK — ask yourself "Can this item still be used for its main purpose?":
+SEVERITY FRAMEWORK — base severity on structural integrity and functionality, not damage type name:
 - "none": No damage visible at all.
-- "low": Cosmetic only. Item fully functional. Most people would not immediately notice.
-- "medium": Clearly visible damage. Item may still work but looks damaged. Needs repair.
-- "high": ONLY if item is completely unusable OR a structural component is fully detached/missing/destroyed.
+- "low": Purely cosmetic damage. The object is 100% structurally sound and fully usable. A scratch on a bumper, a small scuff on a lid — car still drives, laptop still works perfectly.
+- "medium": Significant visible damage but the object remains fundamentally intact and capable of performing its main purpose. Needs repair but still works.
+- "high": Catastrophic structural failure ONLY. The object is completely unusable, totally destroyed, or a major component is completely detached/missing/shattered into pieces.
 - "unknown": Cannot determine from the image.
-STRICT RULE: When uncertain between two levels, ALWAYS choose the lower one."""
+STRICT RULE: When uncertain between two levels, ALWAYS choose the lower one. If the object still functions normally → low, not medium. If it still functions partially → medium, not high."""
 
 
 # ── CAR system instruction ─────────────────────────────────────────────────────
